@@ -1,0 +1,352 @@
+---                             
+title: "El compromiso entre disfrutar y molestar a las aves"
+author: "Zaira García,  Luis Requeni y Celia Sifre"
+date: "27/11/2022"
+output:
+  md_document: default
+geometry: margin=1in
+fontsize: 11pt
+documentclass: article
+---
+
+```{r Librerias, include=FALSE}
+library(coda)
+library(fitdistrplus)
+library(ggplot2)
+library(ggcorrplot)
+library(knitr)
+library(Hmisc)
+library(INLA)
+library(mgcv)
+library(nlme)
+library(pROC)
+library(psych)
+library(R2BayesX)
+library(R2WinBUGS)
+library(scatterplot3d)
+library(knitr)
+library(psych)
+knitr::opts_chunk$set(
+  fig.path = "Figuras/Figura-"
+)
+```
+
+\section*{Introducción}
+
+En primer lugar, realizamos una descriptiva general de nuestro banco de datos.
+
+```{r Introduccion (1), echo=T, eval=T}
+datos <- read.table(file = "FID.dat", header = T)
+```
+
+Contamos con 18 observaciones (*colony*), anotando para cada una de ellas el número de visitantes esperado (*visitors*) y la densidad de gaviotas (*density*) en un momento determinado. Igualmente queda reflejada la distancia media a la que iniciaron el vuelo los distintos ejemplares estudiados al interaccionar con un humano (*meanFID*).
+
+Un análisis descriptivo sencillo nos permite conocer someramente los detalles de nuestro banco de datos.
+
+```{r Introduccion (2), echo=T, eval=T}
+psych::describe(datos)
+```
+
+Merece la pena destacar la alta desviación típica asociada a nuestra variable *visitors*. En 11 de nuestras 18 observaciones el número de visitantes es de tan solo 2 personas (investigadores). Mientras en que en 5 de estas observacionoes los visitantes se miden en más de 1.000. Esta variabilidad nos hace pensar si habrá que trabajar con ella de forma numérica o recategorizarla según una afluencia de visitantes alta, media o baja.
+
+```{r Introduccion (3), echo=T, eval=T}
+ggcorrplot(cor(datos[, 2:4]), hc.order = T,  type = "lower", lab = "TRUE")
+```
+
+Buscaremos un modelo estadístico que apoye esta idea, pero parece haber cierta relación inversa donde a medida que aumenta el número de visitantes o la densidad de gaviotas tienda a disminuir la distancia a la que inician el vuelo estas.
+
+Esto puede complementarse también con la representación gráfica de *meanFID* frente a *visitors* y *density*.
+
+```{r Introduccion (4), echo=T, eval=T, fig.height=2.5, fig.height=2.5}
+par(mfrow = c(1, 2))
+plot(datos$visitors, datos$meanFID, 
+     xlab = "Visitantes", ylab = "Distancia Media FID",
+     main = "FID")
+abline(lm(datos$meanFID ~ datos$visitors))
+plot(datos$density, datos$meanFID, 
+     xlab = "Visitantes", ylab = "Distancia Media FID",
+     main = "FID")
+abline(lm(datos$meanFID ~ datos$density))
+```
+
+Esta representación gráfica también nos permite cuestionar la idoneidad de un modelo de regresión lineal para representar la realidad que nos ocupa.
+
+Ahora bien, tenemos que conocer qué tipo de distribución pueden seguir nuestros datos para poder construir con mejor detalle un modelo asociado a los mismos.
+
+```{r Introduccion (5), echo=T, eval=T, warning=F}
+par(mfrow = c(1,2))
+plot(fitdist(datos$meanFID, "norm"))
+plot(fitdist(datos$meanFID, "gamma"))
+```
+
+A la hora de asumir una distribución para nuestra variable respuesta, resultan igual de razonables la distribución normal y gamma.
+
+
+\newpage
+
+
+\section*{MODELIZACIÓN FRECUENTISTA}
+
+Hemos realizado inicialmente una serie de modelos básicos que permiten formalizar una primera idea general de lo que sucede en nuestro banco de datos. Asumimos para ello una distribución normal para nuestra variable respuesta. Posteriormente, planteamos estos modelos bajo un modelo lineal generalizado que sigue una distribución gamma.
+
++ Modelo Lineal Normal (1)
+
+```{r Modelizacion (1), echo=T, eval=T}
+modelo1 <- lm(meanFID ~ visitors + density, data = datos)
+summary(modelo1)
+```
+
+Este primer modelo apunta a la significatividad tanto del número de visitantes como de la densidad de la isla, siendo más significativa la primera covariable. 
+
+Una interpretación general apuntaría a que por cada unidad de aumento en el número de visitantes disminuye la distancia de reacción en $0.00559$ metros. En otras palabras, por cada 1.000 visitantes más disminuye la distancia de vuelo en aproximadamente 6 metros. La interpretación asociada a la variable *density* es muy similar.
+
+\newpage
+
++ Modelo Lineal Normal (2)
+
+Se propone la recategorización de la variable *visitors*:
+
+```{r Modelizacion (2), echo=T, eval=T}
+datos$visitors2 <- cut(datos$visitors, breaks = 3, labels = c(1, 2, 3), include.lowest = T)
+datos$visitors2 <- as.factor(datos$visitors2)
+```
+
+```{r Modelizacion (2)(1), echo=T, eval=T}
+modelo2 <- lm(meanFID ~ visitors2 + density, data = datos)
+summary(modelo2)
+```
+
+El detalle más importante del modelo incide en que un nivel medio o alto de visitantes es significativo respecto a un nivel bajo. Puede ser igualmente relevante conocer también si existe una significativdad entre el número medio y alto de visitantes o llega un momento en que quizá tal aumento en el número de visitantes no tiene un efecto significativo sobre la distancia de inicio de vuelo.
+
+Construimos un nuevo modelo que incide en este aspecto.
+
+\newpage
+
+```{r Modelizacion (2)(2), echo=T, eval=T}
+datos$visitors2 <- relevel(datos$visitors2, ref = 2)
+modelo2.1 <- lm(meanFID ~ visitors2 + density, data = datos)
+summary(modelo2.1)
+```
+
+Interesante ver como la diferencia entre los grupos 2 y 3 no es significativa.
+
++ Modelo Lineal Mixto
+
+Queremos valorar igualmente si existe un efecto aleatorio en función de la isla de estudio. Analizamos ese variabilidad en función de la isla desde el punto de vista del término independiente.
+
+```{r Modelizacion (3), echo=T, eval=T}
+modelo3 <- lme(meanFID ~ visitors + density, random = ~ 1 | colony, data = datos)
+summary(modelo3)
+```
+
+El hecho de que la varianza asociada a nuestro intercepto sea mayor a la varianza residual $(\sigma_a = 13.51 > 5.06 = \sigma)$ apunta a un efecto aleatorio importante en función de la isla de estudio. Los efectos fijos se comportan de manera similar a las construcciones previas.
+
+La conclusión que extraemos en este sentido es que si el estudio se ha realizado sobre todas las posibles islas de nuestra región, podríamos plantearnos extraer conclusiones sobre el comportamiento de estas islas dado que existe una variabilidad importante. Sería así pues interesante extraer quizá información sobre las distintas condiciones climatológicas de estas islas. 
+Si realmente solo hemos escogido una serie de islas de un amplio conjuntos debemos conocer que existe una amplia variabilidad en los resultados entre las distintas zonas. Conocidas las características de una determinada zona, podríamos inferir el comportamiento en islas cercanas no estudiadas en nuestro análisis.
+
++ Modelo Aditivo
+
+Las dos gráficas del análisis descriptivo invitaban a una relación no lineal de nuestras distintas covariables con la variable respuesta. Planteamos la construcción de un modelo suavizado.
+
+```{r Modelizacion (4), echo=T, eval=T}
+modelo4 <- gam(meanFID ~ s(visitors, bs = "cp") + density, 
+               family = gaussian, 
+               data = datos)
+summary(modelo4)
+```
+
+El reducido número de observaciones nos ha dificultado mucho la elección de una base para nuestro modelo al tiempo que imposibilita la suavización de las dos covariables. Hemos decidido en este sentido suavizar la variable *visitors* siendo esta suavización significativa.
+
++ Resumen Resultados
+
+Así quedan los distintos AIC para los distintos modelos planteados.
+
+```{r Modelizacion (5), echo=T, eval=T}
+kable(data.frame(Modelo = c("Modelo 1", "Modelo 2", "Modelo 3", "Modelo 4"), 
+                 AIC = c(AIC(modelo1), AIC(modelo2), AIC(modelo3), AIC(modelo4))))
+```
+
+Se observa que la inclusión del efecto aleatorio o la suavización de alguna de nuestras variables no supone ninguna mejora con respecto a nuestros dos modelos iniciales más simples. De esta manera, escogeríamos desde un enfoque frecuentista uno de los dos primeros modelos. Creemos que la elección entre el primer o el segundo modelo debería responder a las pretensiones de nuestro estudio.
+
+Hemos decidido así replantear los dos primeros modelos pero asumiendo una distribución gamma para nuestra variable respuesta.
+
+\newpage
+
++ Modelo Lineal Generalizado: Gamma (1)
+
+```{r Modelizacion Bis (1), echo=T, eval=T}
+modelo5 <- glm(meanFID ~ visitors + density, data = datos, family = Gamma(link = "log"))
+modelo5$aic
+summary(modelo5)
+```
+
+El AIC de este modelo supone una mejora considerable con respecto a los modelos anteriores bajo distribución normal. En este sentido, seguimos planteando modelos, estudiando por una parte trabajar con nuestras variables explicativas de manera polinómica o viendo que tipo de link pudiera ofrecer mejores resultados.
+
+\newpage
+
+```{r Modelizacion Bis (2), echo=T, eval=T}
+AICs_ModeloInverse <- c()
+Deviances_ModeloInverse <- c()
+for(i in 1:7){
+  modelo5INV <- glm(meanFID ~ poly(visitors, i) + poly(density, i), 
+                    data = datos, family = Gamma(link = "inverse"))
+  AICs_ModeloInverse[i] <- modelo5INV$aic
+  Deviances_ModeloInverse[i] <-  (modelo5INV$null.deviance -
+                                    modelo5INV$deviance)/modelo5INV$null.deviance*100
+}
+
+AICs_ModeloLog <- c()
+Deviances_ModeloLog <- c()
+for(i in 1:7){
+  modelo5LOG <- glm(meanFID ~ poly(visitors, i) + poly(density, i),
+                    data = datos, family = Gamma(link = "log"))
+  AICs_ModeloLog[i] <- modelo5LOG$aic
+  Deviances_ModeloLog[i] <-  (modelo5LOG$null.deviance -
+                                modelo5LOG$deviance)/modelo5LOG$null.deviance*100
+}
+```
+
+```{r Modelizacion Bis (3), echo=T, eval=T}
+kable(data.frame(Orden = c(1:7), 
+                 AIC_Inverse = AICs_ModeloInverse, 
+                 AIC_Log = AICs_ModeloLog, 
+                 Deviance_Inverse = Deviances_ModeloInverse, 
+                 Deviance_Log = Deviances_ModeloLog))
+```
+
+En este momento, debemos analizar si priorizar un buen AIC y una buena Deviance explicada a pesar de quizá cierta pérdida de interpretabilidad o utilizar un modelo más simple, con mayor margen de error pero más fácil de entender. 
+
+Desde nuestro punto de vista, la mejora en la capacidad de ajuste que supone el trabajo con nuestras covariables de forma polinómica no compensa la capacidad de interpretación que perdemos a la hora de intentar explicar a alguien como influyen la densidad de gaviotas y el número de visitantes en la distancia de reacción.
+
+Por esta manera decidimos no incluir una regresión polinómica en nuestro estudio, aunque merece la pena comentar la mejora en los resultados que esta produce. Decidimos seguir trabajando igualmente con el link *log* por ser más sencillo de interpretar.
+
++ Modelo Lineal Generalizado: Gamma (2)
+
+```{r Modelizacion Bis (4), echo=T, eval=T}
+datos$visitors2 <- cut(datos$visitors, breaks = 3, labels = c(1, 2, 3), include.lowest = T)
+datos$visitors2 <- as.factor(datos$visitors2)
+modelo6 <- glm(meanFID ~ visitors2 + density, data = datos, family = Gamma(link = "log"))
+modelo6$aic
+summary(modelo6)
+```
+
+Presentamos a continuación una comparación entre los modelos de regresión normal y gamma que trabajan con la variable *visitors* sin categorizar (*modelo1* y *modelo5*) y los modelos que plantean su recategorización (*modelo2* y *modelo6*).
+
+\newpage
+
+```{r Modelizacion Bis (5), echo=T, eval=T}
+kable(data.frame(Modelo = c("Modelo 1 (Normal sin Categorizar)", 
+                            "Modelo 2 (Normal Categorizada)", 
+                            "Modelo 5 (Gamma sin Categorizar)", 
+                            "Modelo 6 (Gamma Categorizada)"),
+                 AIC = c(AIC(modelo1), AIC(modelo2), AIC(modelo5), AIC(modelo6)), 
+                 R2_Deviance = c(summary(modelo1)$r.squared, 
+                                 summary(modelo2)$r.squared, 
+                                 (modelo5$null.deviance - modelo5$deviance)/modelo5$null.deviance*100, 
+                                 (modelo6$null.deviance - modelo6$deviance)/modelo6$null.deviance*100)))
+```
+
+Por todo ello, consideramos que el último modelo, es el que nos puede aportar una mayor información entorno al comportamiento de las gaviotas en presencia de humanos. Planteamos a continuación la construcción de este modelo desde el punto de vista Bayesiano, mostrando antes como nuestro mejor modelo (*modelo6*) verifica las condiciones de aplicabilidad, y como queda el ajuste que plantea.
+
+La explicación de los coeficientes asociados a este modelo y los presentados a continuación se valora en el informe oficial.
+
+```{r Modelizacion Bis (6), echo=T, eval=T, warning=F}
+par(mfrow=c(2, 2))
+plot(modelo6)
+```
+
+```{r Modelizacion Bis (7), echo=T, eval=T, warning=F, fig.height=3.25, fig.width=3.25, fig.align='center'}
+par(mfrow=c(1, 1))
+plot(x = modelo6$fitted.values, y = datos$meanFID, 
+     xlab = "Valores Ajustados", ylab = "Mean FID", 
+     xlim = c(0, 80), ylim = c(0, 80))
+```
+
+```{r, echo=F, eval=T}
+save(modelo1, file = "modelo1.rda")
+save(modelo2, file = "modelo2.rda")
+save(modelo3, file = "modelo3.rda")
+save(modelo4, file = "modelo4.rda")
+save(modelo5, file = "modelo5.rda")
+save(modelo6, file = "modelo5.rda")
+```
+
+\newpage
+
+
+
+\section*{MODELIZACIÓN BAYESIANA}
+
+Se ha realizado la construcción bayesiana desde dos herramientas distintas: WinBUGS e INLA. Se presentan los resultados para ambas y se comparan estos con el mejor modelo frecuentista propuesto.
+
++ WinBUGS
+
+```{r Winbugs (1), echo=T, eval=F}
+set.seed(123)
+bayesiano <- function(){
+  # Verosimilitud
+  for (i in 1:N){
+    meanFID[i] ~ dgamma(r, shape[i])
+    shape[i] <- r/mu[i]
+    log(mu[i]) <- alpha + beta.v[visitors[i]] + beta.d*density[i]
+  }
+  # Distribuciones previas
+  alpha ~ dnorm(0, 0.00001)
+  beta.d ~ dnorm(0, 0.00001)
+  # Corner constrain
+  beta.v[1] <- 0
+  for (j in 2:3){
+    beta.v[j] ~ dnorm(0, 0.00001)
+  }
+  r ~ dunif(0, 100)
+  }
+datos1 <- list(N = dim(datos)[1], 
+               meanFID = datos$meanFID, 
+               visitors = as.numeric(datos$visitors2),
+               density = datos$density)
+iniciales <- function() 
+{
+  list(alpha = rnorm(1), beta.v = c(NA, rnorm(1), rnorm(1)), beta.d = rnorm(1),
+       r = runif(1))
+}
+parametros <- c("alpha", "beta.v", "beta.d", "r")
+iteraciones <- 100000
+burnin <- 10000
+Resulbayesiano <- bugs(model = bayesiano, data = datos1, inits = iniciales,
+                      param = parametros,  n.iter = iteraciones, n.burnin = burnin)
+```
+
+```{r Winbugs (2), echo=F, eval=T}
+load("Resulbayesiano.rda")
+```
+
+```{r Winbugs (3), echo=T, eval=T}
+ResultadoBayesiano <- Resulbayesiano$sims.list
+for (i in 1:24){
+  plot(Resulbayesiano$sims.array[, 1, i], type = "l", 
+       xlab = "iteración", ylab = dimnames(Resulbayesiano$sims.array)[[3]][i])
+  lines(Resulbayesiano$sims.array[, 2, i], col = 2)
+  lines(Resulbayesiano$sims.array[, 3, i], col = 3)
+}
+round(Resulbayesiano$summary, 3)
+```
+
+Adecuada convergencia de las cadenas y adecuada construcción del modelo.
+
++ INLA
+
+```{r INLA (1), echo=T, eval=T}
+Resulinla <- inla(meanFID ~ 1 + visitors2 + density, 
+                  family = 'gamma', 
+                  data = datos,
+                  control.inla = list(strategy = 'simplified.laplace'))
+summary(Resulinla)
+```
+
+
+```{r, echo=F, eval=T}
+save(Resulbayesiano, file = "Resulbayesiano.rda")
+save(Resulinla, file = "Resulinla.rda")
+```
+
+Observamos como tanto el modelo realizado desde la perspectiva frecuentista como el obtenido con la perspectiva bayesiana tanto en WinBUGS como en INLA nos ofrecen las mismas estimaciones de los parámetros.
